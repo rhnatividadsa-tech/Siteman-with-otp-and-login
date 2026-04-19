@@ -43,35 +43,66 @@ SMTP_PASS=your-google-app-password
 ---
 
 ## 📦 2. Installation
-Because there are two environments (Frontend and Backend), you need to install the dependencies for both.
 
-1. Install Frontend dependencies (at root):
+This project has two separate environments. Install dependencies for both:
+
+### Step 1: Install Root Dependencies
 ```bash
 npm install
 ```
-2. Install Backend dependencies:
+
+### Step 2: Install Backend Dependencies
 ```bash
 cd backend
 npm install
+cd ..
 ```
 
 ---
 
-## 🚀 3. Initial Build & Startup
+## 🚀 3. Running the Project
 
-Sometimes, the NestJS compiler cache triggers "Cannot find module 'dist/main'" errors during development. To prevent this, build the backend manually the first time:
-
-1. **Build the Backend**
+### First Time Setup
+Before running the project, build the backend once:
 ```bash
 cd backend
 npm run build
+cd ..
 ```
 
-2. **Run Everything Together!**
-Head back to the root folder. The `concurrently` script inside `package.json` allows you to spin up **both** the Next.js UI and the NestJS Backend using a single command:
+### Start Development Servers
+Run both frontend and backend with a single command from the root folder:
 ```bash
-cd ..
 npm run dev
 ```
 
-*This will start your backend API on `http://localhost:3003` and the frontend UI on `http://localhost:3000`. Open `http://localhost:3000` in your browser to log in.*
+**What this does:**
+- ✅ Starts **Next.js frontend** on `http://localhost:3000`
+- ✅ Starts **NestJS backend** on `http://localhost:3003`
+- ✅ Both servers watch for file changes and auto-reload
+- ✅ Both run simultaneously in the same terminal
+
+Visit `http://localhost:3000` in your browser to access the dashboard.
+
+### Stopping the Servers
+Press `Ctrl+C` in the terminal to stop both servers.
+
+### Restarting After Closing
+Simply run from the root folder again:
+```bash
+npm run dev
+```
+
+---
+
+## ⚠️ Troubleshooting
+
+### Port 3003 Already in Use
+If you see `Error: listen EADDRINUSE: address already in use :::3003`, run:
+```bash
+Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+```
+Then restart with `npm run dev`.
+
+### Don't Run Backend Separately
+While `npm run dev` is running from the root folder, **don't** run anything in the backend folder. The backend is already started by the root dev command. Running it separately will cause a port conflict.

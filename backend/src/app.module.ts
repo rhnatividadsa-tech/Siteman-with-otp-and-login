@@ -6,6 +6,7 @@ import { VolunteerRolesModule } from './volunteer-roles/volunteer-roles.module';
 import { MissionsModule } from './missions/missions.module';
 import { AuthModule } from './auth/auth.module';
 import { QrScanModule } from './qr-scan/qr-scan.module';
+import { ShiftsModule } from './shifts/shifts.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { QrScanModule } from './qr-scan/qr-scan.module';
     MissionsModule,
     AuthModule,
     QrScanModule,
+    ShiftsModule,
   ],
 })
 export class AppModule {}

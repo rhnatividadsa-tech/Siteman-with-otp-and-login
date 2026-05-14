@@ -19,6 +19,18 @@ interface VerifiedResult {
     address: string;
     role_in_system: string;
   } | null;
+  donor: {
+    name: string;
+    phone: string;
+    address: string;
+  } | null;
+  donation_details: {
+    id: string;
+    item: string;
+    quantity: number;
+    unit: string;
+    type?: string;
+  } | null;
   role: string;
   campaign: { id: string; title: string; status: string } | null;
   deployment: {
@@ -41,6 +53,38 @@ export default function ScanQrPage() {
   const [errorMsg, setErrorMsg] = useState("");
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState(false);
+
+  // Edit Mode States
+  const [isEditing, setIsEditing] = useState(false);
+  const [editItem, setEditItem] = useState("");
+  const [editQuantity, setEditQuantity] = useState(1);
+  const [editUnit, setEditUnit] = useState("");
+  const [reconciling, setReconciling] = useState(false);
+
+  // Reconcile function
+  const handleReconcile = async () => {
+    if (!result || !result.donation_details) return;
+    try {
+      setReconciling(true);
+      await QrScanAPI.reconcile({
+        donation_id: result.donation_details.id,
+        item_name: result.donation_details.item,
+        quantity: result.donation_details.quantity,
+        unit: result.donation_details.unit,
+        donation_type: result.donation_details.type ?? 'goods',
+      });
+      // Mark local state as reconciled
+      setResult({
+        ...result,
+        application_status: 'completed',
+      });
+      alert("Donation reconciled successfully!");
+    } catch (err: any) {
+      alert("Failed to reconcile: " + err.message);
+    } finally {
+      setReconciling(false);
+    }
+  };
 
   // Start camera
   const startCamera = useCallback(async () => {
@@ -129,14 +173,14 @@ export default function ScanQrPage() {
     try {
       // Parse the QR JSON payload
       const payload = JSON.parse(rawData);
-      const applicationId = payload.application_id;
+      const id = payload.application_id || payload.donation_id;
 
-      if (!applicationId) {
-        throw new Error("Invalid QR code — no application ID found");
+      if (!id) {
+        throw new Error("Invalid QR code — no application or donation ID found");
       }
 
       // Call backend to verify
-      const data = await QrScanAPI.verify(applicationId);
+      const data = await QrScanAPI.verify(id);
       setResult(data);
       setScanState("success");
       stopCamera();
@@ -179,7 +223,7 @@ export default function ScanQrPage() {
         <div className={styles.pageHeader}>
           <h1 className={styles.pageTitle}>📱 Scan QR Code</h1>
           <p className={styles.pageSubtitle}>
-            Point the camera at a volunteer&apos;s deployment QR code
+            Point the camera at a volunteer's or donor's QR code
           </p>
         </div>
 
@@ -194,7 +238,7 @@ export default function ScanQrPage() {
                   <line x1="1" y1="1" x2="23" y2="23" stroke="#ef4444" strokeWidth="2"/>
                 </svg>
                 <p>
-                  Camera access denied or unavailable. Please allow camera access in your browser settings, or make sure you&apos;re using HTTPS.
+                  Camera access denied or unavailable. Please allow camera access in your browser settings, or make sure you're using HTTPS.
                 </p>
                 <button className={styles.scanAgainBtn} onClick={startCamera} style={{ maxWidth: 200 }}>
                   Retry Camera
@@ -249,7 +293,7 @@ export default function ScanQrPage() {
         {scanState === "success" && result && (
           <>
             <div className={`${styles.statusBar} ${styles.statusSuccess}`}>
-              ✅ Volunteer verified successfully
+              ✅ {result.donor ? "Donor" : "Volunteer"} verified successfully
             </div>
 
             <div className={styles.resultCard}>
@@ -261,31 +305,139 @@ export default function ScanQrPage() {
                   </svg>
                 </div>
                 <div className={styles.resultHeaderText}>
-                  <h3>{result.volunteer?.name ?? "Unknown Volunteer"}</h3>
+                  <h3>{result.donor?.name ?? result.volunteer?.name ?? "Unknown User"}</h3>
                   <p>{result.role} • {formatQrType(result.qr_type)}</p>
                 </div>
               </div>
 
               {/* Body */}
               <div className={styles.resultBody}>
-                {/* Volunteer Info */}
+                {/* Person Info */}
                 <div className={styles.resultSection}>
-                  <div className={styles.resultSectionTitle}>Volunteer Info</div>
+                  <div className={styles.resultSectionTitle}>{result.donor ? "Donor Info" : "Volunteer Info"}</div>
                   <div className={styles.resultRow}>
                     <span className={styles.resultLabel}>Phone</span>
-                    <span className={styles.resultValue}>{result.volunteer?.phone || "—"}</span>
+                    <span className={styles.resultValue}>{(result.donor?.phone || result.volunteer?.phone) || "—"}</span>
                   </div>
                   <div className={styles.resultRow}>
                     <span className={styles.resultLabel}>Address</span>
-                    <span className={styles.resultValue}>{result.volunteer?.address || "—"}</span>
+                    <span className={styles.resultValue}>{(result.donor?.address || result.volunteer?.address) || "—"}</span>
                   </div>
                   <div className={styles.resultRow}>
-                    <span className={styles.resultLabel}>Application</span>
+                    <span className={styles.resultLabel}>Status</span>
                     <span className={styles.statusBadgeApproved}>{result.application_status}</span>
                   </div>
                 </div>
 
                 <div className={styles.divider} />
+
+                {/* Donation Details */}
+                {result.donation_details && (
+                  <>
+                    <div className={styles.resultSection}>
+                      <div className={styles.resultSectionTitle}>Donation Drop-Off</div>
+                      
+                      {!isEditing ? (
+                        <>
+                          <div className={styles.resultRow}>
+                            <span className={styles.resultLabel}>Item</span>
+                            <span className={styles.resultValue}>{result.donation_details.item}</span>
+                          </div>
+                          <div className={styles.resultRow}>
+                            <span className={styles.resultLabel}>Quantity</span>
+                            <span className={styles.resultValue}>{result.donation_details.quantity} {result.donation_details.unit}</span>
+                          </div>
+                          {result.application_status !== 'completed' && (
+                            <button
+                              onClick={() => {
+                                setEditItem(result.donation_details!.item);
+                                setEditQuantity(result.donation_details!.quantity);
+                                setEditUnit(result.donation_details!.unit);
+                                setIsEditing(true);
+                              }}
+                              className={styles.editBtn}
+                              style={{ marginTop: '1rem', width: '100%' }}
+                            >
+                              Edit Goods (Doesn't Match)
+                            </button>
+                          )}
+                        </>
+                      ) : (
+                        <div className={styles.editForm} style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '0.5rem' }}>
+                          <div>
+                            <label style={{ fontSize: '0.8rem', color: '#6b7280', display: 'block', marginBottom: '0.25rem' }}>Item Name</label>
+                            <input
+                              type="text"
+                              value={editItem}
+                              onChange={(e) => setEditItem(e.target.value)}
+                              className={styles.inputField}
+                              style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #d1d5db' }}
+                            />
+                          </div>
+                          <div style={{ display: 'flex', gap: '0.5rem' }}>
+                            <div style={{ flex: 1 }}>
+                              <label style={{ fontSize: '0.8rem', color: '#6b7280', display: 'block', marginBottom: '0.25rem' }}>Quantity</label>
+                              <input
+                                type="number"
+                                value={editQuantity}
+                                onChange={(e) => setEditQuantity(Number(e.target.value))}
+                                className={styles.inputField}
+                                style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #d1d5db' }}
+                              />
+                            </div>
+                            <div style={{ flex: 1 }}>
+                              <label style={{ fontSize: '0.8rem', color: 'transparent', display: 'block', marginBottom: '0.25rem' }}>Unit</label>
+                              <input
+                                type="text"
+                                value={editUnit}
+                                onChange={(e) => setEditUnit(e.target.value)}
+                                className={styles.inputField}
+                                placeholder="pcs, kg, etc."
+                                style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #d1d5db' }}
+                              />
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                            <button
+                              onClick={() => setIsEditing(false)}
+                              style={{ flex: 1, padding: '0.5rem', borderRadius: '4px', border: '1px solid #d1d5db', backgroundColor: 'white', cursor: 'pointer' }}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              onClick={() => {
+                                // Save local state and close editing
+                                setResult({
+                                  ...result,
+                                  donation_details: {
+                                    ...result.donation_details!,
+                                    item: editItem,
+                                    quantity: editQuantity,
+                                    unit: editUnit,
+                                  }
+                                });
+                                setIsEditing(false);
+                              }}
+                              style={{ flex: 1, padding: '0.5rem', borderRadius: '4px', border: 'none', backgroundColor: '#3b82f6', color: 'white', cursor: 'pointer' }}
+                            >
+                              Save Changes
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    {result.application_status !== 'completed' && !isEditing && (
+                      <button
+                        onClick={handleReconcile}
+                        disabled={reconciling}
+                        style={{ width: '100%', padding: '0.75rem', backgroundColor: '#10b981', color: 'white', borderRadius: '0.5rem', fontWeight: 600, border: 'none', cursor: reconciling ? 'not-allowed' : 'pointer', opacity: reconciling ? 0.7 : 1, marginTop: '1rem' }}
+                      >
+                        {reconciling ? "Reconciling..." : "Reconcile Donation"}
+                      </button>
+                    )}
+                    <div className={styles.divider} />
+                  </>
+                )}
 
                 {/* Campaign */}
                 {result.campaign && (

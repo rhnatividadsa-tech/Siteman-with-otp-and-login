@@ -20,7 +20,8 @@ backend/node_modules
 
 # build output
 backend/dist/
-
+.env
+.env.local
 # production
 /build
 

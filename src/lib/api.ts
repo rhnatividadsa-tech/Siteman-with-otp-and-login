@@ -64,5 +64,10 @@ export const MissionsAPI = {
 export const QrScanAPI = {
   verify: (applicationId: string) =>
     request<any>(`/qr-scan/${applicationId}`),
+  reconcile: (payload: { donation_id: string; item_name: string; quantity: number; unit: string; donation_type?: string }) =>
+    request<any>('/qr-scan/reconcile', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 };
 

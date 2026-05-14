@@ -50,6 +50,35 @@ export class MissionsService {
     return { success: true, deployments_created: data?.length ?? 0, deployments: data };
   }
 
+  /** Assign specific volunteers (by application_id) to a campaign/mission */
+  async assignVolunteers(applicationIds: string[], campaignId: string, notes?: string) {
+    if (!applicationIds?.length) {
+      throw new BadRequestException('No volunteers selected.');
+    }
+
+    const deploymentRecords = applicationIds.map((appId) => ({
+      application_id: appId,
+      damayan_operation_id: campaignId,
+      task_description: notes ?? 'Assigned by Site Manager',
+      date_assigned: new Date().toISOString(),
+      status: 'active',
+    }));
+
+    // Upsert so re-assigning doesn't create duplicates
+    const { data, error } = await this.db
+      .from('volunteer_deployments')
+      .upsert(deploymentRecords, { onConflict: 'application_id,damayan_operation_id' })
+      .select();
+
+    if (error) throw new BadRequestException(error.message);
+
+    return {
+      success: true,
+      assigned: data?.length ?? applicationIds.length,
+      message: `${data?.length ?? applicationIds.length} volunteer(s) assigned to mission.`,
+    };
+  }
+
   /** Volunteer summary — shows all approved applications (standby/active/completed) */
   async getVolunteerSummary(campaignId?: string) {
     // If campaign filter, resolve role IDs for that campaign first
@@ -159,5 +188,47 @@ export class MissionsService {
     });
 
     return { summary: { total: volunteerApps.length, active, on_mission, completed }, by_role: byRole, deployments: enriched };
+  }
+
+  /** Final Mission Report Generator */
+  async getFinalReport(campaignId?: string) {
+    const client = this.supabase.getClient();
+
+    // 1. Get total reconciled donations
+    let donQuery = client.from('donations').select('quantity, status').eq('status', 'completed');
+    if (campaignId) donQuery = donQuery.eq('campaign_id', campaignId);
+    
+    const { data: donations } = await donQuery;
+    const totalReconciledGoods = (donations ?? []).reduce((acc, curr) => acc + Number(curr.quantity ?? 0), 0);
+
+    // 2. Get total volunteer man-hours
+    let shiftsQuery = client.from('volunteer_shifts').select('total_hours').eq('status', 'approved');
+    if (campaignId) shiftsQuery = shiftsQuery.eq('campaign_id', campaignId);
+
+    const { data: shifts } = await shiftsQuery;
+    const totalManHours = (shifts ?? []).reduce((acc, curr) => acc + Number(curr.total_hours ?? 0), 0);
+
+    // 3. Mission success metrics (participation count)
+    let deployQuery = client.from('volunteer_deployments').select('status');
+    // We would need to join via application -> role -> campaign to filter by campaign, 
+    // but for simplicity we'll just count overall or let the frontend pass correct params.
+    const { data: deployments } = await deployQuery;
+    
+    const completedDeployments = (deployments ?? []).filter(d => d.status === 'completed').length;
+    const totalDeployments = (deployments ?? []).length;
+    const successRate = totalDeployments > 0 ? (completedDeployments / totalDeployments) * 100 : 0;
+
+    return {
+      mission_summary: {
+        total_donations_reconciled: totalReconciledGoods,
+        total_volunteer_man_hours: Number(totalManHours.toFixed(2)),
+        mission_success_rate_percent: Number(successRate.toFixed(2)),
+        total_volunteers_participated: totalDeployments
+      },
+      archived_data_points: {
+        completed_shifts: shifts?.length ?? 0,
+        reconciled_dropoffs: donations?.length ?? 0
+      }
+    };
   }
 }

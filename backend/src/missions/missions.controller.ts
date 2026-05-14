@@ -14,9 +14,23 @@ export class MissionsController {
     return this.service.activateMission(missionDto, activated_by ?? 'site-manager');
   }
 
+  /** POST /api/missions/assign — assign selected volunteers to a campaign */
+  @Post('assign')
+  assignVolunteers(
+    @Body() body: { application_ids: string[]; campaign_id: string; notes?: string },
+  ) {
+    return this.service.assignVolunteers(body.application_ids, body.campaign_id, body.notes);
+  }
+
   /** GET /api/missions/volunteer-summary — real-time volunteer summary */
   @Get('volunteer-summary')
   getVolunteerSummary(@Query('campaign_id') campaignId?: string) {
     return this.service.getVolunteerSummary(campaignId);
+  }
+
+  /** GET /api/missions/report — Final Mission Report */
+  @Get('report')
+  getFinalReport(@Query('campaign_id') campaignId?: string) {
+    return this.service.getFinalReport(campaignId);
   }
 }

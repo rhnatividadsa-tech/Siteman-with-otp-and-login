@@ -23,8 +23,9 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { useState, useMemo, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
-import { MissionsAPI } from '@/lib/api';
+import { MissionsAPI, CampaignsAPI } from '@/lib/api';
 
 export default function VolunteerSummaryPage() {
   const [searchTerm, setSearchTerm] = useState('');
@@ -40,10 +41,31 @@ export default function VolunteerSummaryPage() {
     deployments: any[];
   } | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [campaigns, setCampaigns] = useState<any[]>([]);
+  const [selectedCampaignId, setSelectedCampaignId] = useState('');
+  const [selectedTeamModal, setSelectedTeamModal] = useState<string | null>(null);
+  const [selectedVolunteerIds, setSelectedVolunteerIds] = useState<string[]>([]);
+  const [assignMissionId, setAssignMissionId] = useState('');
+  const [assigning, setAssigning] = useState(false);
+  const [assignError, setAssignError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [showMissionDropdown, setShowMissionDropdown] = useState(false);
+  const [isMounted, setIsMounted] = useState(false);
+
+  useEffect(() => { setIsMounted(true); }, []);
+
+  // Reset selection when modal changes
+  useEffect(() => {
+    setSelectedVolunteerIds([]);
+    setAssignMissionId(selectedCampaignId || '');
+    setAssignError(null);
+    setSuccessMessage(null);
+  }, [selectedTeamModal, selectedCampaignId]);
 
   // Refs for dropdown click outside handling
   const teamDropdownRef = useRef<HTMLDivElement>(null);
   const statusDropdownRef = useRef<HTMLDivElement>(null);
+  const missionDropdownRef = useRef<HTMLDivElement>(null);
   
   const ROLE_COLORS: Record<string, string> = {
     'Medic Team': '#5C6ED5',
@@ -55,14 +77,29 @@ export default function VolunteerSummaryPage() {
   // Team distribution derived from API data
   const teamDistribution = useMemo(() => {
     if (!summaryData?.by_role) return [];
+    
+    const toTitleCase = (str: string) => {
+      if (!str) return '';
+      return str.replace(
+        /\w\S*/g,
+        (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase()
+      );
+    };
+
     const total = summaryData.summary.total || 1;
-    return Object.entries(summaryData.by_role).map(([name, value], i) => ({
-      name,
-      value,
-      percentage: Number(((value / total) * 100).toFixed(1)),
-      color: ROLE_COLORS[name] ?? FALLBACK_COLORS[i % FALLBACK_COLORS.length],
-    }));
+    return Object.entries(summaryData.by_role).map(([name, value], i) => {
+      const titleName = toTitleCase(name);
+      return {
+        name: titleName,
+        value,
+        percentage: Number(((value / total) * 100).toFixed(1)),
+        color: ROLE_COLORS[titleName] ?? ROLE_COLORS[name] ?? FALLBACK_COLORS[i % FALLBACK_COLORS.length],
+      };
+    });
   }, [summaryData]);
+
+  // Active (deployed) count per role — derived after volunteers is computed below
+  // This is computed inline where needed using the volunteers array.
 
   const totalVolunteers = summaryData?.summary.total ?? 0;
 
@@ -95,6 +132,15 @@ export default function VolunteerSummaryPage() {
       const app = (d.volunteer_applications as any) ?? {};
       const profile = app.user_profiles ?? {};
       const role = app.volunteer_roles ?? {};
+      
+      const toTitleCase = (str: string) => {
+        if (!str) return '';
+        return str.replace(
+          /\w\S*/g,
+          (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase()
+        );
+      };
+
       const firstName = (profile.first_name ?? '') as string;
       const lastName = (profile.last_name ?? '') as string;
       const fullName = [firstName, lastName].filter(Boolean).join(' ') || 'Unknown';
@@ -102,14 +148,18 @@ export default function VolunteerSummaryPage() {
       const deploymentStatus =
         d.status === 'active' ? 'Active' :
         d.status === 'completed' ? 'Completed' : 'Standby';
+      
+      const roleTitle = toTitleCase((role.title ?? 'Unassigned') as string);
+
       return {
         id: (d.id as string).slice(0, 8).toUpperCase(),
+        applicationId: d.application_id as string, // raw ID needed for assignment
         name: fullName,
         initials,
-        team: role.title ?? 'Unassigned',
-        teamCategory: role.title ?? 'Unassigned',
+        team: roleTitle,
+        teamCategory: roleTitle,
         location: role.location ?? profile.municipality ?? '—',
-        capabilities: role.title ? [role.title as string] : [],
+        capabilities: roleTitle !== 'Unassigned' ? [roleTitle] : [],
         status: deploymentStatus,
         avatar: null,
       };
@@ -161,12 +211,20 @@ export default function VolunteerSummaryPage() {
     setSearchTerm('');
   };
 
-  // Fetch volunteer summary on mount
+  // Fetch volunteer summary on mount and when campaign changes
   useEffect(() => {
-    MissionsAPI.volunteerSummary()
+    setLoading(true);
+    MissionsAPI.volunteerSummary(selectedCampaignId || undefined)
       .then((data) => { setSummaryData(data); setLastUpdated(new Date()); })
       .catch((err: any) => setApiError(err.message ?? 'Failed to load volunteer summary'))
       .finally(() => setLoading(false));
+  }, [selectedCampaignId]);
+
+  // Fetch campaigns
+  useEffect(() => {
+    CampaignsAPI.list()
+      .then(setCampaigns)
+      .catch(() => {});
   }, []);
 
   // Close dropdowns when clicking outside
@@ -177,6 +235,9 @@ export default function VolunteerSummaryPage() {
       }
       if (statusDropdownRef.current && !statusDropdownRef.current.contains(event.target as Node)) {
         setShowStatusDropdown(false);
+      }
+      if (missionDropdownRef.current && !missionDropdownRef.current.contains(event.target as Node)) {
+        setShowMissionDropdown(false);
       }
     };
     
@@ -193,22 +254,21 @@ export default function VolunteerSummaryPage() {
     }
   };
 
-  const getTeamIcon = (team: string) => {
-    switch(team) {
-      case 'Medic Team': return <HeartPulse size={14} color="#5C6ED5" />;
-      case 'Logistics': return <Truck size={14} color="#F59E0B" />;
-      case 'Field Ops': return <MapPin size={14} color="#10B981" />;
-      default: return null;
-    }
+  const getTeamColor = (team: string) => {
+    const t = (team || '').toLowerCase();
+    if (t.includes('medic') || t.includes('health')) return '#5C6ED5';
+    if (t.includes('logistic') || t.includes('supply')) return '#F59E0B';
+    if (t.includes('field') || t.includes('ops') || t.includes('rescue')) return '#10B981';
+    return '#6B7280';
   };
 
-  const getTeamColor = (team: string) => {
-    switch(team) {
-      case 'Medic Team': return '#5C6ED5';
-      case 'Logistics': return '#F59E0B';
-      case 'Field Ops': return '#10B981';
-      default: return '#6B7280';
-    }
+  const getTeamIcon = (team: string) => {
+    const t = (team || '').toLowerCase();
+    const color = getTeamColor(team);
+    if (t.includes('medic') || t.includes('health')) return <HeartPulse size={24} color={color} />;
+    if (t.includes('logistic') || t.includes('supply')) return <Truck size={24} color={color} />;
+    if (t.includes('field') || t.includes('ops') || t.includes('rescue')) return <UserCog size={24} color={color} />;
+    return <Users size={24} color={color} />;
   };
 
   const totalFilters = selectedTeams.length + selectedStatuses.length;
@@ -230,7 +290,7 @@ export default function VolunteerSummaryPage() {
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
-          marginTop: '8px',  // Small top margin instead of breadcrumb
+          marginTop: '8px',
           marginBottom: '4px'
         }}>
           <div>
@@ -247,16 +307,93 @@ export default function VolunteerSummaryPage() {
               <Activity size={32} color="#5C6ED5" />
               Volunteer Command
             </h1>
-            <p style={{
-              fontSize: '14px',
-              color: '#6B7280',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px'
-            }}>
-              <Clock size={14} color="#9CA3AF" />
-              Live Updates · Last updated: <span style={{ fontWeight: 500, color: '#374151' }}>{lastUpdated ? lastUpdated.toLocaleTimeString() : '—'}</span>
-            </p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+              <p style={{
+                fontSize: '14px',
+                color: '#6B7280',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                margin: 0
+              }}>
+                <Clock size={14} color="#9CA3AF" />
+                Live Updates · Last updated: <span style={{ fontWeight: 500, color: '#374151' }}>{lastUpdated ? lastUpdated.toLocaleTimeString() : '—'}</span>
+              </p>
+              
+              {/* Mission Custom Dropdown */}
+              <div ref={missionDropdownRef} style={{ display: 'flex', alignItems: 'center', gap: '8px', position: 'relative' }}>
+                <span style={{ fontSize: '13px', color: '#6B7280', fontWeight: 500 }}>Mission:</span>
+                <button
+                  onClick={() => setShowMissionDropdown(!showMissionDropdown)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '7px 12px',
+                    backgroundColor: selectedCampaignId ? 'rgba(92, 110, 213, 0.08)' : 'white',
+                    border: selectedCampaignId ? '1px solid #5C6ED5' : '1px solid #E5E5E5',
+                    borderRadius: '0.5rem',
+                    fontSize: '13px',
+                    fontWeight: 500,
+                    color: selectedCampaignId ? '#5C6ED5' : '#374151',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                    whiteSpace: 'nowrap',
+                    minWidth: '160px',
+                    justifyContent: 'space-between',
+                    boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
+                  }}
+                >
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '200px' }}>
+                    {selectedCampaignId ? campaigns.find(c => c.id === selectedCampaignId)?.title ?? 'All Missions' : 'All Missions'}
+                  </span>
+                  <ChevronDown size={14} style={{ flexShrink: 0, transform: showMissionDropdown ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }} />
+                </button>
+
+                {showMissionDropdown && (
+                  <div style={{
+                    position: 'absolute',
+                    top: 'calc(100% + 6px)',
+                    left: 0,
+                    minWidth: '280px',
+                    backgroundColor: 'white',
+                    border: '1px solid #E5E5E5',
+                    borderRadius: '0.5rem',
+                    boxShadow: '0 10px 25px -5px rgba(92, 110, 213, 0.12), 0 8px 10px -6px rgba(92, 110, 213, 0.08)',
+                    zIndex: 100,
+                    overflow: 'hidden',
+                  }}>
+                    <div style={{ padding: '8px 12px', borderBottom: '1px solid #E5E5E5', fontSize: '0.75rem', fontWeight: 600, color: '#171717', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      Select Mission
+                    </div>
+                    {[{ id: '', title: 'All Missions' }, ...campaigns].map(c => (
+                      <div
+                        key={c.id || 'all'}
+                        onClick={() => { setSelectedCampaignId(c.id); setShowMissionDropdown(false); }}
+                        style={{
+                          padding: '10px 14px',
+                          cursor: 'pointer',
+                          backgroundColor: selectedCampaignId === c.id ? 'rgba(92, 110, 213, 0.08)' : 'white',
+                          color: selectedCampaignId === c.id ? '#5C6ED5' : '#374151',
+                          fontSize: '13px',
+                          fontWeight: selectedCampaignId === c.id ? 600 : 400,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          borderBottom: '1px solid #FAFAFA',
+                          transition: 'background-color 0.15s'
+                        }}
+                        onMouseEnter={(e) => { if (selectedCampaignId !== c.id) e.currentTarget.style.backgroundColor = '#FAFAFA'; }}
+                        onMouseLeave={(e) => { if (selectedCampaignId !== c.id) e.currentTarget.style.backgroundColor = 'white'; }}
+                      >
+                        {c.title}
+                        {selectedCampaignId === c.id && <Check size={14} color="#5C6ED5" />}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
 
           {/* Live Indicator */}
@@ -546,6 +683,10 @@ export default function VolunteerSummaryPage() {
                     boxShadow: '0 2px 4px rgba(0,0,0,0.02)',
                     transform: 'translateY(0)',
                   }}
+                  onClick={() => {
+                    setSelectedTeamModal(team.name);
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
                   onMouseEnter={(e) => {
                     e.currentTarget.style.transform = 'translateY(-2px)';
                     e.currentTarget.style.boxShadow = '0 8px 25px rgba(0,0,0,0.1)';
@@ -572,7 +713,11 @@ export default function VolunteerSummaryPage() {
                         <div style={{ fontWeight: 600, fontSize: '16px', color: '#111827', marginBottom: '6px' }}>{team.name}</div>
                         <div style={{ fontSize: '13px', color: '#4B5563', display: 'flex', alignItems: 'center', gap: '4px' }}>
                           <Users size={12} color="#9CA3AF" />
-                          {team.value} deployed
+                          {(() => {
+                            const activeCount = volunteers.filter(v => v.teamCategory === team.name && v.status === 'Active').length;
+                            const totalCount = team.value;
+                            return `${activeCount}/${totalCount} Volunteer${totalCount !== 1 ? 's' : ''} Deployed`;
+                          })()}
                         </div>
                       </div>
                     </div>
@@ -586,7 +731,10 @@ export default function VolunteerSummaryPage() {
                         color: '#0B7B4A',
                         border: '1px solid rgba(16, 185, 129, 0.2)'
                       }}>
-                        {team.value} members
+                        {(() => {
+                            const activeCount = volunteers.filter(v => v.teamCategory === team.name && v.status === 'Active').length;
+                            return `${activeCount}/${team.value}`;
+                          })()}
                       </div>
                       <span style={{
                         width: '10px',
@@ -796,55 +944,59 @@ export default function VolunteerSummaryPage() {
                     display: 'flex',
                     alignItems: 'center',
                     gap: '6px',
-                    padding: '8px 14px',
-                    backgroundColor: selectedTeams.length > 0 ? 'rgba(92, 110, 213, 0.1)' : '#F9FAFB',
-                    border: '1px solid #E5E7EB',
-                    borderRadius: '10px',
-                    fontSize: '14px',
+                    padding: '0.5rem 1rem',
+                    backgroundColor: selectedTeams.length > 0 ? 'rgba(92, 110, 213, 0.08)' : 'white',
+                    border: selectedTeams.length > 0 ? '1px solid #5C6ED5' : '1px solid #E5E5E5',
+                    borderRadius: '0.5rem',
+                    fontSize: '0.875rem',
                     fontWeight: 500,
-                    color: selectedTeams.length > 0 ? '#5C6ED5' : '#374151',
-                    cursor: 'pointer'
+                    color: selectedTeams.length > 0 ? '#5C6ED5' : '#525252',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                    whiteSpace: 'nowrap',
+                    flexShrink: 0
                   }}
+                  onMouseEnter={(e) => { if (selectedTeams.length === 0) { e.currentTarget.style.backgroundColor = '#FAFAFA'; e.currentTarget.style.color = '#5C6ED5'; e.currentTarget.style.borderColor = '#5C6ED5'; }}}
+                  onMouseLeave={(e) => { if (selectedTeams.length === 0) { e.currentTarget.style.backgroundColor = 'white'; e.currentTarget.style.color = '#525252'; e.currentTarget.style.borderColor = '#E5E5E5'; }}}
                 >
-                  <Filter size={14} color={selectedTeams.length > 0 ? '#5C6ED5' : '#6B7280'} />
+                  <Filter size={14} />
                   Team
                   {selectedTeams.length > 0 && (
                     <span style={{
                       backgroundColor: '#5C6ED5',
                       color: 'white',
                       borderRadius: '20px',
-                      padding: '2px 8px',
+                      padding: '1px 7px',
                       fontSize: '11px',
                       fontWeight: 600,
-                      marginLeft: '4px'
                     }}>
                       {selectedTeams.length}
                     </span>
                   )}
-                  <ChevronDown size={14} color="#6B7280" />
+                  <ChevronDown size={14} />
                 </button>
                 
                 {showTeamDropdown && (
                   <div style={{
                     position: 'absolute',
-                    top: 'calc(100% + 4px)',
+                    top: 'calc(100% + 6px)',
                     right: 0,
-                    width: '200px',
+                    width: '210px',
                     backgroundColor: 'white',
-                    border: '1px solid #E5E7EB',
-                    borderRadius: '10px',
-                    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
-                    zIndex: 10,
+                    border: '1px solid #E5E5E5',
+                    borderRadius: '0.5rem',
+                    boxShadow: '0 10px 25px -5px rgba(92, 110, 213, 0.1), 0 8px 10px -6px rgba(92, 110, 213, 0.05)',
+                    zIndex: 50,
                     overflow: 'hidden'
                   }}>
                     <div style={{
                       padding: '8px 12px',
-                      borderBottom: '1px solid #F3F4F6',
-                      fontSize: '12px',
+                      borderBottom: '1px solid #E5E5E5',
+                      fontSize: '0.75rem',
                       fontWeight: 600,
-                      color: '#6B7280',
+                      color: '#171717',
                       textTransform: 'uppercase',
-                      letterSpacing: '0.03em'
+                      letterSpacing: '0.05em'
                     }}>
                       Filter by Team
                     </div>
@@ -859,24 +1011,17 @@ export default function VolunteerSummaryPage() {
                           padding: '10px 12px',
                           cursor: 'pointer',
                           backgroundColor: selectedTeams.includes(team) ? 'rgba(92, 110, 213, 0.05)' : 'white',
-                          borderBottom: '1px solid #F9FAFB',
-                          transition: 'background-color 0.2s'
+                          borderBottom: '1px solid #FAFAFA',
+                          transition: 'background-color 0.15s'
                         }}
-                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#F9FAFB'}
+                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#FAFAFA'}
                         onMouseLeave={(e) => e.currentTarget.style.backgroundColor = selectedTeams.includes(team) ? 'rgba(92, 110, 213, 0.05)' : 'white'}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <div style={{
-                            width: '12px',
-                            height: '12px',
-                            borderRadius: '3px',
-                            backgroundColor: getTeamColor(team)
-                          }} />
-                          <span style={{ fontSize: '14px', color: '#374151' }}>{team}</span>
+                          <div style={{ width: '10px', height: '10px', borderRadius: '3px', backgroundColor: getTeamColor(team), flexShrink: 0 }} />
+                          <span style={{ fontSize: '0.875rem', color: '#374151' }}>{team}</span>
                         </div>
-                        {selectedTeams.includes(team) && (
-                          <Check size={14} color="#5C6ED5" />
-                        )}
+                        {selectedTeams.includes(team) && <Check size={14} color="#5C6ED5" />}
                       </div>
                     ))}
                   </div>
@@ -894,55 +1039,59 @@ export default function VolunteerSummaryPage() {
                     display: 'flex',
                     alignItems: 'center',
                     gap: '6px',
-                    padding: '8px 14px',
-                    backgroundColor: selectedStatuses.length > 0 ? 'rgba(92, 110, 213, 0.1)' : '#F9FAFB',
-                    border: '1px solid #E5E7EB',
-                    borderRadius: '10px',
-                    fontSize: '14px',
+                    padding: '0.5rem 1rem',
+                    backgroundColor: selectedStatuses.length > 0 ? 'rgba(92, 110, 213, 0.08)' : 'white',
+                    border: selectedStatuses.length > 0 ? '1px solid #5C6ED5' : '1px solid #E5E5E5',
+                    borderRadius: '0.5rem',
+                    fontSize: '0.875rem',
                     fontWeight: 500,
-                    color: selectedStatuses.length > 0 ? '#5C6ED5' : '#374151',
-                    cursor: 'pointer'
+                    color: selectedStatuses.length > 0 ? '#5C6ED5' : '#525252',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                    whiteSpace: 'nowrap',
+                    flexShrink: 0
                   }}
+                  onMouseEnter={(e) => { if (selectedStatuses.length === 0) { e.currentTarget.style.backgroundColor = '#FAFAFA'; e.currentTarget.style.color = '#5C6ED5'; e.currentTarget.style.borderColor = '#5C6ED5'; }}}
+                  onMouseLeave={(e) => { if (selectedStatuses.length === 0) { e.currentTarget.style.backgroundColor = 'white'; e.currentTarget.style.color = '#525252'; e.currentTarget.style.borderColor = '#E5E5E5'; }}}
                 >
-                  <Filter size={14} color={selectedStatuses.length > 0 ? '#5C6ED5' : '#6B7280'} />
+                  <Filter size={14} />
                   Status
                   {selectedStatuses.length > 0 && (
                     <span style={{
                       backgroundColor: '#5C6ED5',
                       color: 'white',
                       borderRadius: '20px',
-                      padding: '2px 8px',
+                      padding: '1px 7px',
                       fontSize: '11px',
                       fontWeight: 600,
-                      marginLeft: '4px'
                     }}>
                       {selectedStatuses.length}
                     </span>
                   )}
-                  <ChevronDown size={14} color="#6B7280" />
+                  <ChevronDown size={14} />
                 </button>
                 
                 {showStatusDropdown && (
                   <div style={{
                     position: 'absolute',
-                    top: 'calc(100% + 4px)',
+                    top: 'calc(100% + 6px)',
                     right: 0,
-                    width: '180px',
+                    width: '200px',
                     backgroundColor: 'white',
-                    border: '1px solid #E5E7EB',
-                    borderRadius: '10px',
-                    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
-                    zIndex: 10,
+                    border: '1px solid #E5E5E5',
+                    borderRadius: '0.5rem',
+                    boxShadow: '0 10px 25px -5px rgba(92, 110, 213, 0.1), 0 8px 10px -6px rgba(92, 110, 213, 0.05)',
+                    zIndex: 50,
                     overflow: 'hidden'
                   }}>
                     <div style={{
                       padding: '8px 12px',
-                      borderBottom: '1px solid #F3F4F6',
-                      fontSize: '12px',
+                      borderBottom: '1px solid #E5E5E5',
+                      fontSize: '0.75rem',
                       fontWeight: 600,
-                      color: '#6B7280',
+                      color: '#171717',
                       textTransform: 'uppercase',
-                      letterSpacing: '0.03em'
+                      letterSpacing: '0.05em'
                     }}>
                       Filter by Status
                     </div>
@@ -959,24 +1108,24 @@ export default function VolunteerSummaryPage() {
                             padding: '10px 12px',
                             cursor: 'pointer',
                             backgroundColor: selectedStatuses.includes(status) ? 'rgba(92, 110, 213, 0.05)' : 'white',
-                            borderBottom: '1px solid #F9FAFB',
-                            transition: 'background-color 0.2s'
+                            borderBottom: '1px solid #FAFAFA',
+                            transition: 'background-color 0.15s'
                           }}
-                          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#F9FAFB'}
+                          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#FAFAFA'}
                           onMouseLeave={(e) => e.currentTarget.style.backgroundColor = selectedStatuses.includes(status) ? 'rgba(92, 110, 213, 0.05)' : 'white'}
                         >
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                             <span style={{
+                              display: 'inline-block',
                               width: '8px',
                               height: '8px',
                               borderRadius: '50%',
-                              backgroundColor: statusColor.border
+                              backgroundColor: statusColor.border,
+                              flexShrink: 0
                             }} />
-                            <span style={{ fontSize: '14px', color: '#374151' }}>{status}</span>
+                            <span style={{ fontSize: '0.875rem', color: '#374151' }}>{status}</span>
                           </div>
-                          {selectedStatuses.includes(status) && (
-                            <Check size={14} color="#5C6ED5" />
-                          )}
+                          {selectedStatuses.includes(status) && <Check size={14} color="#5C6ED5" />}
                         </div>
                       );
                     })}
@@ -1156,16 +1305,18 @@ export default function VolunteerSummaryPage() {
                           display: 'flex', 
                           alignItems: 'center', 
                           gap: '8px',
-                          backgroundColor: '#F9FAFB',
+                          backgroundColor: `${getTeamColor(volunteer.teamCategory)}14`,
                           padding: '6px 12px',
                           borderRadius: '30px',
                           width: 'fit-content',
-                          border: '1px solid #F3F4F6'
+                          border: `1px solid ${getTeamColor(volunteer.teamCategory)}30`
                         }}>
-                          {volunteer.teamCategory === 'Medic Team' && <HeartPulse size={14} color="#5C6ED5" />}
-                          {volunteer.teamCategory === 'Logistics' && <Truck size={14} color="#F59E0B" />}
-                          {volunteer.teamCategory === 'Field Ops' && <MapPin size={14} color="#10B981" />}
-                          <span style={{ fontSize: '14px', fontWeight: 500, color: '#374151' }}>{volunteer.team}</span>
+                          {getTeamIcon(volunteer.teamCategory) && (
+                            <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                              {(() => { const icon = getTeamIcon(volunteer.teamCategory); return icon ? (() => { const I = icon as React.ReactElement; return <I.type {...I.props} size={14} />; })() : null; })()}
+                            </span>
+                          )}
+                          <span style={{ fontSize: '14px', fontWeight: 500, color: getTeamColor(volunteer.teamCategory) }}>{volunteer.team}</span>
                         </div>
                       </td>
                       <td style={{ padding: '16px 8px', color: '#374151', fontWeight: 500 }}>
@@ -1207,12 +1358,6 @@ export default function VolunteerSummaryPage() {
                       </td>
                       <td style={{ padding: '16px 8px', textAlign: 'right' }}>
                         <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '8px' }}>
-                          <button className="btn btn-accept" style={{ fontSize: '12px', padding: '6px 12px' }}>
-                            Accept
-                          </button>
-                          <button className="btn btn-reject" style={{ fontSize: '12px', padding: '6px 12px' }}>
-                            Reject
-                          </button>
                           <button style={{
                             background: 'none',
                             border: 'none',
@@ -1252,18 +1397,234 @@ export default function VolunteerSummaryPage() {
           )}
         </div>
 
+        {/* Modal — rendered via Portal directly on document.body for true full-page blur */}
+        {isMounted && selectedTeamModal && createPortal(
+          <div style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(17, 24, 39, 0.55)',
+            zIndex: 99999,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            WebkitBackdropFilter: 'blur(3px)',
+            backdropFilter: 'blur(3px)',
+          }} onClick={() => setSelectedTeamModal(null)}>
+            <div style={{
+              backgroundColor: 'white',
+              borderRadius: '16px',
+              width: '90%',
+              maxWidth: '580px',
+              maxHeight: '80vh',
+              display: 'flex',
+              flexDirection: 'column',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+              animation: 'smSlideUp 0.18s ease-out',
+              border: '1px solid rgba(229, 229, 229, 0.6)',
+              willChange: 'transform, opacity',
+            }} onClick={(e) => e.stopPropagation()}>
+              {/* Modal Header */}
+              <div style={{ padding: '20px 24px', borderBottom: '1px solid rgba(229, 229, 229, 0.9)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
+                <div>
+                  <h3 style={{ fontSize: '0.75rem', fontWeight: 700, color: '#5C6ED5', textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {getTeamIcon(selectedTeamModal)}
+                    {selectedTeamModal} Volunteers
+                  </h3>
+                  <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#6B7280' }}>Select volunteers to assign to an active mission.</p>
+                </div>
+                <button onClick={() => setSelectedTeamModal(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#737373', padding: '0.5rem', borderRadius: '0.375rem', transition: 'all 0.2s', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#F5F5F5'; e.currentTarget.style.color = '#171717'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = '#737373'; }}>
+                  <X size={18} />
+                </button>
+              </div>
+              {/* Mission Selector inside modal */}
+              <div style={{ padding: '14px 24px', borderBottom: '1px solid #F3F4F6', backgroundColor: '#FAFAFA', flexShrink: 0 }}>
+                <label style={{ fontSize: '12px', fontWeight: 600, color: '#374151', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: '6px' }}>
+                  Assign to Mission <span style={{ color: '#DC2626' }}>*</span>
+                </label>
+                <select
+                  value={assignMissionId}
+                  onChange={(e) => setAssignMissionId(e.target.value)}
+                  style={{
+                    width: '100%', padding: '8px 12px', borderRadius: '8px',
+                    border: assignMissionId ? '1px solid #5C6ED5' : '1px solid #E5E7EB',
+                    fontSize: '13px', fontWeight: 500,
+                    color: assignMissionId ? '#1e3a8a' : '#9CA3AF',
+                    backgroundColor: 'white', outline: 'none', cursor: 'pointer',
+                    appearance: 'none',
+                    backgroundImage: 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'16\' height=\'16\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%236B7280\' stroke-width=\'2\'%3E%3Cpolyline points=\'6 9 12 15 18 9\'%3E%3C/polyline%3E%3C/svg%3E")',
+                    backgroundRepeat: 'no-repeat', backgroundPosition: 'right 10px center', backgroundSize: '16px',
+                    boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                  }}
+                >
+                  <option value="">— Select a mission —</option>
+                  {campaigns.map(c => (
+                    <option key={c.id} value={c.id}>{c.title}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Volunteer List */}
+              <div style={{ padding: '16px 24px', overflowY: 'auto', flex: 1 }}>
+                {volunteers.filter(v => v.teamCategory === selectedTeamModal).length > 0 && (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 0', marginBottom: '8px', borderBottom: '1px solid #F3F4F6', cursor: 'pointer', fontSize: '13px', color: '#6B7280', fontWeight: 500 }}>
+                    <input
+                      type="checkbox"
+                      style={{ width: '16px', height: '16px', accentColor: '#5C6ED5' }}
+                      checked={volunteers.filter(v => v.teamCategory === selectedTeamModal).length > 0 && selectedVolunteerIds.length === volunteers.filter(v => v.teamCategory === selectedTeamModal).length}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedVolunteerIds(volunteers.filter(v => v.teamCategory === selectedTeamModal).map(v => v.applicationId).filter(Boolean));
+                        } else {
+                          setSelectedVolunteerIds([]);
+                        }
+                      }}
+                    />
+                    Select All ({volunteers.filter(v => v.teamCategory === selectedTeamModal).length})
+                  </label>
+                )}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {volunteers.filter(v => v.teamCategory === selectedTeamModal).map(v => {
+                    const isSelected = selectedVolunteerIds.includes(v.applicationId);
+                    return (
+                      <label key={v.id} style={{
+                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                        padding: '12px 14px',
+                        border: isSelected ? `1px solid ${getTeamColor(selectedTeamModal)}` : '1px solid #E5E7EB',
+                        borderRadius: '12px', cursor: 'pointer', transition: 'all 0.15s',
+                        backgroundColor: isSelected ? `${getTeamColor(selectedTeamModal)}08` : 'white',
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                          <input
+                            type="checkbox"
+                            style={{ width: '16px', height: '16px', accentColor: '#5C6ED5', flexShrink: 0 }}
+                            checked={isSelected}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedVolunteerIds(prev => [...prev, v.applicationId]);
+                              } else {
+                                setSelectedVolunteerIds(prev => prev.filter(id => id !== v.applicationId));
+                              }
+                            }}
+                          />
+                          <div style={{ width: '38px', height: '38px', borderRadius: '10px', background: `${getTeamColor(selectedTeamModal)}20`, color: getTeamColor(selectedTeamModal), display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '13px', flexShrink: 0 }}>
+                            {v.initials}
+                          </div>
+                          <div>
+                            <div style={{ fontWeight: 600, color: '#111827', fontSize: '14px' }}>{v.name}</div>
+                            <div style={{ color: '#9CA3AF', fontSize: '12px' }}>ID: {v.id}</div>
+                          </div>
+                        </div>
+                        <span style={{ padding: '3px 10px', backgroundColor: getStatusColor(v.status).bg, color: getStatusColor(v.status).text, borderRadius: '20px', fontSize: '11px', fontWeight: 600, border: `1px solid ${getStatusColor(v.status).border}`, flexShrink: 0 }}>
+                          {v.status}
+                        </span>
+                      </label>
+                    );
+                  })}
+                  {volunteers.filter(v => v.teamCategory === selectedTeamModal).length === 0 && (
+                    <div style={{ textAlign: 'center', color: '#9CA3AF', padding: '32px 0', fontSize: '14px' }}>No volunteers found for this role.</div>
+                  )}
+                </div>
+              </div>
+              {assignError && (
+                <div style={{ margin: '0 24px 12px', padding: '10px 14px', backgroundColor: '#FEF2F2', border: '1px solid #FCA5A5', color: '#DC2626', borderRadius: '8px', fontSize: '13px', flexShrink: 0 }}>
+                  {assignError}
+                </div>
+              )}
+              {/* Modal Footer */}
+              <div style={{ padding: '14px 24px', display: 'flex', gap: '10px', borderTop: '1px solid #E5E7EB', backgroundColor: '#F9FAFB', borderBottomLeftRadius: '16px', borderBottomRightRadius: '16px', flexShrink: 0, alignItems: 'center' }}>
+                <div style={{ fontSize: '13px', color: '#6B7280', flex: 1 }}>
+                  {selectedVolunteerIds.length > 0
+                    ? <span style={{ color: '#5C6ED5', fontWeight: 600 }}>{selectedVolunteerIds.length} selected</span>
+                    : <span>No volunteers selected</span>}
+                </div>
+                <button onClick={() => setSelectedTeamModal(null)}
+                  style={{ padding: '0.55rem 1.1rem', backgroundColor: '#F3F4F6', color: '#000000', borderRadius: '0.5rem', border: 'none', fontWeight: 600, fontSize: '0.875rem', cursor: 'pointer', transition: 'all 0.2s' }}
+                  onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#E5E7EB'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#F3F4F6'; }}>
+                  Cancel
+                </button>
+                <button
+                  disabled={assigning || selectedVolunteerIds.length === 0 || !assignMissionId}
+                  onClick={async () => {
+                    if (!assignMissionId) { setAssignError('Please select a mission first.'); return; }
+                    if (selectedVolunteerIds.length === 0) { setAssignError('Please select at least one volunteer.'); return; }
+                    setAssigning(true); setAssignError(null);
+                    try {
+                      const baseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001').replace(/\/$/, '');
+                      const res = await fetch(`${baseUrl}/api/missions/assign`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ application_ids: selectedVolunteerIds, campaign_id: assignMissionId }),
+                      });
+                      const data = await res.json();
+                      if (!res.ok) throw new Error(data.message || `Server error ${res.status}`);
+                      const missionTitle = campaigns.find(c => c.id === assignMissionId)?.title ?? 'the mission';
+                      setSuccessMessage(`${data.assigned ?? selectedVolunteerIds.length} volunteer(s) successfully assigned to "${missionTitle}"!`);
+                    } catch (err: any) {
+                      setAssignError(err.message || 'Assignment failed. Please try again.');
+                    } finally {
+                      setAssigning(false);
+                    }
+                  }}
+                  style={{
+                    padding: '0.55rem 1.25rem',
+                    backgroundColor: (assigning || selectedVolunteerIds.length === 0 || !assignMissionId) ? '#D1D5DB' : '#5C6ED5',
+                    border: 'none', color: 'white', borderRadius: '0.5rem', fontWeight: 600, fontSize: '0.875rem',
+                    cursor: (assigning || selectedVolunteerIds.length === 0 || !assignMissionId) ? 'not-allowed' : 'pointer',
+                    transition: 'all 0.2s', display: 'flex', alignItems: 'center', gap: '6px'
+                  }}>
+                  {assigning ? 'Assigning...' : `Assign${selectedVolunteerIds.length > 0 ? ` (${selectedVolunteerIds.length})` : ''}`}
+                </button>
+              </div>
+            </div>
+            <style>{`
+              @keyframes smSlideUp {
+                from { opacity: 0; transform: translateY(12px); }
+                to { opacity: 1; transform: translateY(0); }
+              }
+              @keyframes smFadeIn {
+                from { opacity: 0; transform: scale(0.95); }
+                to { opacity: 1; transform: scale(1); }
+              }
+            `}</style>
+            {/* In-portal success overlay */}
+            {successMessage && (
+              <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(17,24,39,0.6)', zIndex: 100000, display: 'flex', alignItems: 'center', justifyContent: 'center', WebkitBackdropFilter: 'blur(3px)', backdropFilter: 'blur(3px)' }}
+                onClick={() => { setSuccessMessage(null); setSelectedTeamModal(null); }}>
+                <div style={{ backgroundColor: 'white', borderRadius: '16px', padding: '40px 36px', maxWidth: '420px', width: '90%', textAlign: 'center', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.25)', animation: 'smFadeIn 0.2s ease-out' }}
+                  onClick={(e) => e.stopPropagation()}>
+                  <div style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: 'rgba(16,185,129,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
+                    <Check size={32} color="#10B981" strokeWidth={2.5} />
+                  </div>
+                  <h3 style={{ fontSize: '1.125rem', fontWeight: 700, color: '#111827', margin: '0 0 8px 0' }}>Assignment Successful</h3>
+                  <p style={{ fontSize: '14px', color: '#6B7280', margin: '0 0 28px 0', lineHeight: 1.6 }}>{successMessage}</p>
+                  <button
+                    onClick={() => { setSuccessMessage(null); setSelectedTeamModal(null); }}
+                    style={{ padding: '0.65rem 2rem', backgroundColor: '#5C6ED5', color: 'white', border: 'none', borderRadius: '0.5rem', fontWeight: 600, fontSize: '0.9rem', cursor: 'pointer', transition: 'background-color 0.2s' }}
+                    onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#3E5A99'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#5C6ED5'; }}
+                  >
+                    Done
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>,
+          document.body
+        )}
+
         {/* Add animation keyframes */}
         <style jsx>{`
           @keyframes pulse {
-            0% {
-              opacity: 1;
-            }
-            50% {
-              opacity: 0.5;
-            }
-            100% {
-              opacity: 1;
-            }
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+          }
+          @keyframes slideUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
           }
         `}</style>
       </div>

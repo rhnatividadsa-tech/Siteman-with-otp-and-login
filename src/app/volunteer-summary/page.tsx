@@ -22,7 +22,7 @@ import {
   Check
 } from 'lucide-react';
 import Link from 'next/link';
-import { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { MissionsAPI, CampaignsAPI } from '@/lib/api';
@@ -1352,7 +1352,7 @@ export default function VolunteerSummaryPage() {
                         }}>
                           {getTeamIcon(volunteer.teamCategory) && (
                             <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
-                              {(() => { const icon = getTeamIcon(volunteer.teamCategory); return icon ? (() => { const I = icon as React.ReactElement; return <I.type {...I.props} size={14} />; })() : null; })()}
+                              {getTeamIcon(volunteer.teamCategory)}
                             </span>
                           )}
                           <span style={{ fontSize: '14px', fontWeight: 500, color: getTeamColor(volunteer.teamCategory) }}>{volunteer.team}</span>
@@ -1682,6 +1682,18 @@ export default function VolunteerSummaryPage() {
                       // Assign tasks to each selected volunteer's deployment
                       const teamVols = volunteers.filter(v => v.teamCategory === selectedTeamModal);
                       const selectedVols = teamVols.filter(v => selectedVolunteerIds.includes(v.applicationId));
+                      
+                      // Check for already assigned tasks
+                      const alreadyAssignedInfo: string[] = [];
+                      selectedVols.forEach(v => {
+                        const tasksAlreadyAssigned = selectedTaskTitles.filter(t => 
+                          v.currentTasks.includes(t)
+                        );
+                        if (tasksAlreadyAssigned.length > 0) {
+                          alreadyAssignedInfo.push(`${v.name}: already assigned to ${tasksAlreadyAssigned.join(', ')}`);
+                        }
+                      });
+
                       const results = await Promise.all(
                         selectedVols.map(v =>
                           fetch(`${baseUrl}/api/tasks/assign`, {
@@ -1698,9 +1710,20 @@ export default function VolunteerSummaryPage() {
                             return data;
                           })
                         )
-                      );
+      );
                       const totalAssigned = results.reduce((sum, r) => sum + (r.assigned ?? 0), 0);
-                      setSuccessMessage(`${totalAssigned} task assignment(s) created across ${selectedVols.length} volunteer(s).`);
+                      let successMsg = `${totalAssigned} task assignment(s) created across ${selectedVols.length} volunteer(s).`;
+                      if (alreadyAssignedInfo.length > 0) {
+                        successMsg += `\n\nNote: ${alreadyAssignedInfo.join(' ')}`;
+                      }
+                      setSuccessMessage(successMsg);
+                      
+                      // Refresh volunteer data to show updated current tasks
+                      setLoading(true);
+                      MissionsAPI.volunteerSummary(selectedCampaignId || undefined)
+                        .then((data) => { setSummaryData(data); setLastUpdated(new Date()); })
+                        .catch((err: any) => setApiError(err.message ?? 'Failed to reload volunteer summary'))
+                        .finally(() => setLoading(false));
                     } catch (err: any) {
                       setAssignError(err.message || 'Assignment failed. Please try again.');
                     } finally {
@@ -1738,7 +1761,7 @@ export default function VolunteerSummaryPage() {
                     <Check size={32} color="#10B981" strokeWidth={2.5} />
                   </div>
                   <h3 style={{ fontSize: '1.125rem', fontWeight: 700, color: '#111827', margin: '0 0 8px 0' }}>Assignment Successful</h3>
-                  <p style={{ fontSize: '14px', color: '#6B7280', margin: '0 0 28px 0', lineHeight: 1.6 }}>{successMessage}</p>
+                  <p style={{ fontSize: '14px', color: '#6B7280', margin: '0 0 28px 0', lineHeight: 1.6, whiteSpace: 'pre-line', textAlign: 'left' }}>{successMessage}</p>
                   <button
                     onClick={() => { setSuccessMessage(null); setSelectedTeamModal(null); }}
                     style={{ padding: '0.65rem 2rem', backgroundColor: '#5C6ED5', color: 'white', border: 'none', borderRadius: '0.5rem', fontWeight: 600, fontSize: '0.9rem', cursor: 'pointer', transition: 'background-color 0.2s' }}

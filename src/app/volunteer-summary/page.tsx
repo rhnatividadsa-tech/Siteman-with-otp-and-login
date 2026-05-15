@@ -49,6 +49,14 @@ export default function VolunteerSummaryPage() {
   const [assigning, setAssigning] = useState(false);
   const [assignError, setAssignError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  // Task state
+  const [roleTasks, setRoleTasks] = useState<{ title: string; description?: string }[]>([]);
+  const [selectedTaskTitles, setSelectedTaskTitles] = useState<string[]>([]);
+  const [loadingTasks, setLoadingTasks] = useState(false);
+  const [newTaskTitle, setNewTaskTitle] = useState('');
+  const [newTaskDesc, setNewTaskDesc] = useState('');
+  const [showAddTask, setShowAddTask] = useState(false);
+  const [savingTask, setSavingTask] = useState(false);
   const [showMissionDropdown, setShowMissionDropdown] = useState(false);
   const [isMounted, setIsMounted] = useState(false);
 
@@ -60,7 +68,35 @@ export default function VolunteerSummaryPage() {
     setAssignMissionId(selectedCampaignId || '');
     setAssignError(null);
     setSuccessMessage(null);
-  }, [selectedTeamModal, selectedCampaignId]);
+    setSelectedTaskTitles([]);
+    setNewTaskTitle('');
+    setNewTaskDesc('');
+    setShowAddTask(false);
+
+    // Fetch tasks for the role when modal opens
+    if (selectedTeamModal) {
+      const baseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001').replace(/\/$/, '');
+      // Derive roleId directly from summaryData (available in scope) rather than
+      // the 'volunteers' useMemo which is defined later in the file.
+      const deployments = summaryData?.deployments ?? [];
+      const match = deployments.find((d: any) => {
+        const role = (d.volunteer_applications as any)?.volunteer_roles;
+        const title = role?.title ?? '';
+        return title.replace(/\w\S*/g, (t: string) => t.charAt(0).toUpperCase() + t.substr(1).toLowerCase()) === selectedTeamModal;
+      });
+      const roleId = (match?.volunteer_applications as any)?.volunteer_roles?.id;
+      if (roleId) {
+        setLoadingTasks(true);
+        fetch(`${baseUrl}/api/tasks/role/${roleId}`)
+          .then(res => res.ok ? res.json() : Promise.resolve({ tasks: [] }))
+          .then(data => setRoleTasks(data.tasks ?? []))
+          .catch(() => setRoleTasks([]))
+          .finally(() => setLoadingTasks(false));
+      }
+    } else {
+      setRoleTasks([]);
+    }
+  }, [selectedTeamModal, selectedCampaignId, summaryData]);
 
   // Refs for dropdown click outside handling
   const teamDropdownRef = useRef<HTMLDivElement>(null);
@@ -153,13 +189,16 @@ export default function VolunteerSummaryPage() {
 
       return {
         id: (d.id as string).slice(0, 8).toUpperCase(),
-        applicationId: d.application_id as string, // raw ID needed for assignment
+        deploymentId: (d.deployment_id ?? d.id) as string,   // actual volunteer_deployments.id
+        applicationId: d.application_id as string,
+        roleId: role.id as string,
         name: fullName,
         initials,
         team: roleTitle,
         teamCategory: roleTitle,
         location: role.location ?? profile.municipality ?? '—',
         capabilities: roleTitle !== 'Unassigned' ? [roleTitle] : [],
+        currentTasks: (d.current_tasks || []).map((t: any) => t.task_title),
         status: deploymentStatus,
         avatar: null,
       };
@@ -476,7 +515,7 @@ export default function VolunteerSummaryPage() {
                 color: '#6B7280',
                 fontWeight: 500
               }}>
-                {summaryData ? `${summaryData.summary.active} active · ${summaryData.summary.completed} completed` : 'Connect Supabase to load data'}
+                {summaryData ? `${summaryData.summary.active} active · ${summaryData.summary.completed} completed` : 'No data available'}
               </div>
             </div>
           </div>
@@ -666,7 +705,7 @@ export default function VolunteerSummaryPage() {
                 <LoadingSpinner text="Loading teams…" />
               ) : teamDistribution.length === 0 ? (
                 <div style={{ padding: '32px', textAlign: 'center', color: '#9CA3AF', fontSize: '14px' }}>
-                  No active teams. Connect Supabase to see real data.
+                  No active teams to display.
                 </div>
               ) : (
                 teamDistribution.map((team) => (
@@ -855,7 +894,7 @@ export default function VolunteerSummaryPage() {
                 ))
               ) : (
                 <div style={{ textAlign: 'center', color: '#9CA3AF', fontSize: '13px', padding: '8px 0' }}>
-                  {loading ? <LoadingSpinner size={16} text="Loading…" /> : 'No data — connect Supabase'}
+                  {loading ? <LoadingSpinner size={16} text="Loading…" /> : 'No data available'}
                 </div>
               )}
             </div>
@@ -1430,7 +1469,7 @@ export default function VolunteerSummaryPage() {
                     {getTeamIcon(selectedTeamModal)}
                     {selectedTeamModal} Volunteers
                   </h3>
-                  <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#6B7280' }}>Select volunteers to assign to an active mission.</p>
+                  <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#6B7280' }}>Select tasks and volunteers to assign.</p>
                 </div>
                 <button onClick={() => setSelectedTeamModal(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#737373', padding: '0.5rem', borderRadius: '0.375rem', transition: 'all 0.2s', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                 onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#F5F5F5'; e.currentTarget.style.color = '#171717'; }}
@@ -1438,31 +1477,109 @@ export default function VolunteerSummaryPage() {
                   <X size={18} />
                 </button>
               </div>
-              {/* Mission Selector inside modal */}
-              <div style={{ padding: '14px 24px', borderBottom: '1px solid #F3F4F6', backgroundColor: '#FAFAFA', flexShrink: 0 }}>
-                <label style={{ fontSize: '12px', fontWeight: 600, color: '#374151', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: '6px' }}>
-                  Assign to Mission <span style={{ color: '#DC2626' }}>*</span>
-                </label>
-                <select
-                  value={assignMissionId}
-                  onChange={(e) => setAssignMissionId(e.target.value)}
-                  style={{
-                    width: '100%', padding: '8px 12px', borderRadius: '8px',
-                    border: assignMissionId ? '1px solid #5C6ED5' : '1px solid #E5E7EB',
-                    fontSize: '13px', fontWeight: 500,
-                    color: assignMissionId ? '#1e3a8a' : '#9CA3AF',
-                    backgroundColor: 'white', outline: 'none', cursor: 'pointer',
-                    appearance: 'none',
-                    backgroundImage: 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'16\' height=\'16\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%236B7280\' stroke-width=\'2\'%3E%3Cpolyline points=\'6 9 12 15 18 9\'%3E%3C/polyline%3E%3C/svg%3E")',
-                    backgroundRepeat: 'no-repeat', backgroundPosition: 'right 10px center', backgroundSize: '16px',
-                    boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
-                  }}
-                >
-                  <option value="">— Select a mission —</option>
-                  {campaigns.map(c => (
-                    <option key={c.id} value={c.id}>{c.title}</option>
-                  ))}
-                </select>
+              {/* Task Checklist */}
+              <div style={{ padding: '14px 24px', borderBottom: '1px solid #F3F4F6', backgroundColor: '#FAFAFA', flexShrink: 0, maxHeight: '220px', overflowY: 'auto' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    Role Tasks <span style={{ color: '#DC2626' }}>*</span>
+                  </span>
+                  <button
+                    onClick={() => setShowAddTask(v => !v)}
+                    style={{ fontSize: '12px', fontWeight: 600, color: '#5C6ED5', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', padding: '4px 8px', borderRadius: '6px', transition: 'background 0.15s' }}
+                    onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(92,110,213,0.08)'}
+                    onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                  >
+                    + New Task
+                  </button>
+                </div>
+
+                {/* Add New Task inline form */}
+                {showAddTask && (
+                  <div style={{ backgroundColor: 'white', border: '1px solid #E5E7EB', borderRadius: '10px', padding: '12px', marginBottom: '10px' }}>
+                    <input
+                      placeholder="Task title (e.g. Pack Medicine)"
+                      value={newTaskTitle}
+                      onChange={(e) => setNewTaskTitle(e.target.value)}
+                      style={{ width: '100%', padding: '7px 10px', borderRadius: '6px', border: '1px solid #E5E7EB', fontSize: '13px', marginBottom: '6px', outline: 'none', boxSizing: 'border-box' }}
+                    />
+                    <input
+                      placeholder="Description (optional)"
+                      value={newTaskDesc}
+                      onChange={(e) => setNewTaskDesc(e.target.value)}
+                      style={{ width: '100%', padding: '7px 10px', borderRadius: '6px', border: '1px solid #E5E7EB', fontSize: '13px', marginBottom: '8px', outline: 'none', boxSizing: 'border-box' }}
+                    />
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button
+                        disabled={savingTask || !newTaskTitle.trim()}
+                        onClick={async () => {
+                          if (!newTaskTitle.trim()) return;
+                          const roleId = volunteers.find(v => v.teamCategory === selectedTeamModal)?.roleId;
+                          if (!roleId) return;
+                          setSavingTask(true);
+                          try {
+                            const baseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001').replace(/\/$/, '');
+                            const res = await fetch(`${baseUrl}/api/tasks/role/${roleId}`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ title: newTaskTitle.trim(), description: newTaskDesc.trim() }),
+                            });
+                            const data = await res.json();
+                            if (!res.ok) throw new Error(data.message);
+                            setRoleTasks(data.tasks ?? []);
+                            setNewTaskTitle('');
+                            setNewTaskDesc('');
+                            setShowAddTask(false);
+                          } catch (err: any) {
+                            setAssignError(err.message || 'Failed to save task.');
+                          } finally {
+                            setSavingTask(false);
+                          }
+                        }}
+                        style={{ flex: 1, padding: '6px 12px', backgroundColor: savingTask || !newTaskTitle.trim() ? '#D1D5DB' : '#5C6ED5', color: 'white', border: 'none', borderRadius: '6px', fontWeight: 600, fontSize: '12px', cursor: savingTask || !newTaskTitle.trim() ? 'not-allowed' : 'pointer' }}
+                      >
+                        {savingTask ? 'Saving...' : 'Save Task'}
+                      </button>
+                      <button onClick={() => { setShowAddTask(false); setNewTaskTitle(''); setNewTaskDesc(''); }}
+                        style={{ padding: '6px 12px', backgroundColor: '#F3F4F6', color: '#374151', border: 'none', borderRadius: '6px', fontWeight: 600, fontSize: '12px', cursor: 'pointer' }}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {loadingTasks ? (
+                  <div style={{ textAlign: 'center', color: '#9CA3AF', padding: '16px 0', fontSize: '13px' }}>Loading tasks…</div>
+                ) : roleTasks.length === 0 ? (
+                  <div style={{ textAlign: 'center', color: '#9CA3AF', padding: '12px 0', fontSize: '13px' }}>No tasks yet. Click "+ New Task" to add one.</div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {roleTasks.map((task) => {
+                      const isChecked = selectedTaskTitles.includes(task.title);
+                      return (
+                        <label key={task.title} style={{
+                          display: 'flex', alignItems: 'flex-start', gap: '10px', padding: '8px 10px',
+                          borderRadius: '8px', cursor: 'pointer', transition: 'background 0.12s',
+                          backgroundColor: isChecked ? 'rgba(92,110,213,0.07)' : 'white',
+                          border: isChecked ? '1px solid rgba(92,110,213,0.3)' : '1px solid #E5E7EB',
+                        }}>
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={(e) => {
+                              if (e.target.checked) setSelectedTaskTitles(p => [...p, task.title]);
+                              else setSelectedTaskTitles(p => p.filter(t => t !== task.title));
+                            }}
+                            style={{ marginTop: '2px', accentColor: '#5C6ED5', flexShrink: 0 }}
+                          />
+                          <div>
+                            <div style={{ fontSize: '13px', fontWeight: 600, color: '#111827' }}>{task.title}</div>
+                            {task.description && <div style={{ fontSize: '11px', color: '#9CA3AF', marginTop: '2px' }}>{task.description}</div>}
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
               {/* Volunteer List */}
@@ -1514,6 +1631,15 @@ export default function VolunteerSummaryPage() {
                           <div>
                             <div style={{ fontWeight: 600, color: '#111827', fontSize: '14px' }}>{v.name}</div>
                             <div style={{ color: '#9CA3AF', fontSize: '12px' }}>ID: {v.id}</div>
+                            {(v.currentTasks as string[])?.length > 0 && (
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '4px' }}>
+                                {(v.currentTasks as string[]).map(t => (
+                                  <span key={t} style={{ backgroundColor: '#F3F4F6', color: '#4B5563', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 500 }}>
+                                    {t}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         </div>
                         <span style={{ padding: '3px 10px', backgroundColor: getStatusColor(v.status).bg, color: getStatusColor(v.status).text, borderRadius: '20px', fontSize: '11px', fontWeight: 600, border: `1px solid ${getStatusColor(v.status).border}`, flexShrink: 0 }}>
@@ -1546,22 +1672,35 @@ export default function VolunteerSummaryPage() {
                   Cancel
                 </button>
                 <button
-                  disabled={assigning || selectedVolunteerIds.length === 0 || !assignMissionId}
+                  disabled={assigning || selectedVolunteerIds.length === 0 || selectedTaskTitles.length === 0}
                   onClick={async () => {
-                    if (!assignMissionId) { setAssignError('Please select a mission first.'); return; }
                     if (selectedVolunteerIds.length === 0) { setAssignError('Please select at least one volunteer.'); return; }
+                    if (selectedTaskTitles.length === 0) { setAssignError('Please select at least one task.'); return; }
                     setAssigning(true); setAssignError(null);
                     try {
                       const baseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001').replace(/\/$/, '');
-                      const res = await fetch(`${baseUrl}/api/missions/assign`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ application_ids: selectedVolunteerIds, campaign_id: assignMissionId }),
-                      });
-                      const data = await res.json();
-                      if (!res.ok) throw new Error(data.message || `Server error ${res.status}`);
-                      const missionTitle = campaigns.find(c => c.id === assignMissionId)?.title ?? 'the mission';
-                      setSuccessMessage(`${data.assigned ?? selectedVolunteerIds.length} volunteer(s) successfully assigned to "${missionTitle}"!`);
+                      // Assign tasks to each selected volunteer's deployment
+                      const teamVols = volunteers.filter(v => v.teamCategory === selectedTeamModal);
+                      const selectedVols = teamVols.filter(v => selectedVolunteerIds.includes(v.applicationId));
+                      const results = await Promise.all(
+                        selectedVols.map(v =>
+                          fetch(`${baseUrl}/api/tasks/assign`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              application_id: v.applicationId,
+                              role_id: v.roleId,
+                              task_titles: selectedTaskTitles,
+                            }),
+                          }).then(async r => {
+                            const data = await r.json();
+                            if (!r.ok) throw new Error(data.message || 'Failed to assign tasks');
+                            return data;
+                          })
+                        )
+                      );
+                      const totalAssigned = results.reduce((sum, r) => sum + (r.assigned ?? 0), 0);
+                      setSuccessMessage(`${totalAssigned} task assignment(s) created across ${selectedVols.length} volunteer(s).`);
                     } catch (err: any) {
                       setAssignError(err.message || 'Assignment failed. Please try again.');
                     } finally {
@@ -1570,12 +1709,12 @@ export default function VolunteerSummaryPage() {
                   }}
                   style={{
                     padding: '0.55rem 1.25rem',
-                    backgroundColor: (assigning || selectedVolunteerIds.length === 0 || !assignMissionId) ? '#D1D5DB' : '#5C6ED5',
+                    backgroundColor: (assigning || selectedVolunteerIds.length === 0 || selectedTaskTitles.length === 0) ? '#D1D5DB' : '#5C6ED5',
                     border: 'none', color: 'white', borderRadius: '0.5rem', fontWeight: 600, fontSize: '0.875rem',
-                    cursor: (assigning || selectedVolunteerIds.length === 0 || !assignMissionId) ? 'not-allowed' : 'pointer',
+                    cursor: (assigning || selectedVolunteerIds.length === 0 || selectedTaskTitles.length === 0) ? 'not-allowed' : 'pointer',
                     transition: 'all 0.2s', display: 'flex', alignItems: 'center', gap: '6px'
                   }}>
-                  {assigning ? 'Assigning...' : `Assign${selectedVolunteerIds.length > 0 ? ` (${selectedVolunteerIds.length})` : ''}`}
+                  {assigning ? 'Assigning...' : 'Assign'}
                 </button>
               </div>
             </div>

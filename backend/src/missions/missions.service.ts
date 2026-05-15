@@ -114,38 +114,50 @@ export class MissionsService {
     const appIds = apps.map((a) => a.id);
     const { data: deployments } = await this.db
       .from('volunteer_deployments')
-      .select('application_id, status, date_assigned')
+      .select('id, application_id, status, date_assigned')
       .in('application_id', appIds);
 
     // Build map with priority: active > assigned > completed > (anything else)
     // so that a volunteer with multiple deployments is never demoted by a later row
     const STATUS_PRIORITY: Record<string, number> = { active: 3, assigned: 2, completed: 1 };
-    const deployedMap = new Map<string, { status: string; date_assigned: string | null }>();
+    const deployedMap = new Map<string, { status: string; date_assigned: string | null; deployment_id: string | null }>();
     for (const d of deployments ?? []) {
       const existing = deployedMap.get(d.application_id);
       const newPriority = STATUS_PRIORITY[d.status] ?? 0;
       const oldPriority = existing ? (STATUS_PRIORITY[existing.status] ?? 0) : -1;
       if (newPriority > oldPriority) {
-        deployedMap.set(d.application_id, { status: d.status, date_assigned: d.date_assigned ?? null });
+        deployedMap.set(d.application_id, { status: d.status, date_assigned: d.date_assigned ?? null, deployment_id: d.id ?? null });
       }
     }
 
     // Fetch profiles (volunteers only) and roles in parallel
     const authIds = [...new Set(apps.map((a) => a.volunteer_auth_id).filter(Boolean))];
     const roleIds = [...new Set(apps.map((a) => a.role_id).filter(Boolean))];
+    const deploymentIds = [...new Set(Array.from(deployedMap.values()).map(v => v.deployment_id).filter(Boolean))];
 
-    const [profilesRes, rolesRes] = await Promise.all([
+    const [profilesRes, rolesRes, tasksRes] = await Promise.all([
       authIds.length
         ? this.db.from('user_profiles').select('id, auth_user_id, first_name, last_name, profile_photo_key, barangay, municipality').in('auth_user_id', authIds).eq('role', 'volunteer')
         : Promise.resolve({ data: [] as any[], error: null }),
       roleIds.length
-        ? this.db.from('volunteer_roles').select('id, title, location').in('id', roleIds)
+        ? this.db.from('volunteer_roles').select('id, title, location, tasks').in('id', roleIds)
+        : Promise.resolve({ data: [] as any[], error: null }),
+      deploymentIds.length
+        ? this.db.from('volunteer_task_assignments').select('deployment_id, task_title, status').in('deployment_id', deploymentIds as string[])
         : Promise.resolve({ data: [] as any[], error: null }),
     ]);
     if (profilesRes.error) throw new BadRequestException(profilesRes.error.message);
     if (rolesRes.error) throw new BadRequestException(rolesRes.error.message);
+    if (tasksRes.error) throw new BadRequestException(tasksRes.error.message);
 
     const profileMap = new Map((profilesRes.data ?? []).map((p) => [p.auth_user_id, p]));
+    
+    // Group tasks by deployment_id
+    const taskMap = new Map<string, any[]>();
+    for (const t of tasksRes.data ?? []) {
+      if (!taskMap.has(t.deployment_id)) taskMap.set(t.deployment_id, []);
+      taskMap.get(t.deployment_id)!.push(t);
+    }
 
     // Only count applications that belong to actual volunteers
     const volunteerAuthIds = new Set(profileMap.keys());
@@ -179,6 +191,8 @@ export class MissionsService {
         date_assigned: deployment?.date_assigned ?? app.applied_at ?? null,
         task_description: role?.title ?? 'Assigned',
         damayan_operation_id: null,
+        deployment_id: deployment?.deployment_id ?? null, // actual deployment uuid for task assignment
+        current_tasks: deployment?.deployment_id ? (taskMap.get(deployment.deployment_id) ?? []) : [],
         volunteer_applications: {
           ...app,
           user_profiles: profileMap.get(app.volunteer_auth_id) ?? null,

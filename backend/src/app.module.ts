@@ -7,6 +7,7 @@ import { MissionsModule } from './missions/missions.module';
 import { AuthModule } from './auth/auth.module';
 import { QrScanModule } from './qr-scan/qr-scan.module';
 import { ShiftsModule } from './shifts/shifts.module';
+import { TasksModule } from './tasks/tasks.module';
 
 @Module({
   imports: [
@@ -21,7 +22,9 @@ import { ShiftsModule } from './shifts/shifts.module';
     AuthModule,
     QrScanModule,
     ShiftsModule,
+    TasksModule,
   ],
 })
 export class AppModule {}
+
 

@@ -554,7 +554,7 @@ export default function Home() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             {recentActivity.length === 0 ? (
               <div style={{ fontSize: '13px', color: 'var(--color-gray-400)', textAlign: 'center', padding: '16px 0' }}>
-                No recent activity — connect Supabase to load data.
+                No recent activity.
               </div>
             ) : (
               recentActivity.map((item, idx) => (

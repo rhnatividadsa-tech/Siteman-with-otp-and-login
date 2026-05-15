@@ -27,7 +27,7 @@ export default function ShiftsPage() {
       // 404 → table likely not migrated yet, show empty state
       if (res.status === 404) {
         setShifts([]);
-        setErrorMsg("Shifts table not found. Run the migration script in Supabase, then restart the backend.");
+        setErrorMsg("Shifts table not found. Please contact your administrator.");
         return;
       }
       if (!res.ok) {

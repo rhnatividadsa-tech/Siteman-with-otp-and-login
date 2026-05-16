@@ -28,6 +28,7 @@ export class TasksController {
       role_id: string;
       task_titles: string[];
       assigned_by?: string;
+      campaign_id?: string;
     },
   ) {
     return this.service.assignTasks(
@@ -35,6 +36,7 @@ export class TasksController {
       body.role_id,
       body.task_titles,
       body.assigned_by,
+      body.campaign_id,
     );
   }
 }

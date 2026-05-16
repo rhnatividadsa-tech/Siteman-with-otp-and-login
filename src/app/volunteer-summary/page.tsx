@@ -1703,6 +1703,7 @@ export default function VolunteerSummaryPage() {
                               application_id: v.applicationId,
                               role_id: v.roleId,
                               task_titles: selectedTaskTitles,
+                              campaign_id: selectedCampaignId,
                             }),
                           }).then(async r => {
                             const data = await r.json();

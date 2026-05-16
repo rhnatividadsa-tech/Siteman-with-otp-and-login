@@ -62,6 +62,7 @@ export class TasksService {
     roleId: string,
     taskTitles: string[],
     assignedBy?: string,
+    campaignId?: string,
   ) {
     if (!taskTitles?.length) throw new BadRequestException('No tasks selected');
     if (!applicationId) throw new BadRequestException('Application ID is required');
@@ -80,10 +81,23 @@ export class TasksService {
       deploymentId = existingDeployments[0].id;
     } else {
       // 2. Create a new deployment if one doesn't exist
+      
+      // Fallback: if campaignId not provided, fetch from role
+      let finalCampaignId = campaignId;
+      if (!finalCampaignId) {
+        const { data: roleData } = await this.db
+          .from('volunteer_roles')
+          .select('campaign_id')
+          .eq('id', roleId)
+          .single();
+        finalCampaignId = roleData?.campaign_id;
+      }
+
       const { data: newDeployment, error: deployErr } = await this.db
         .from('volunteer_deployments')
         .insert({
           application_id: applicationId,
+          damayan_operation_id: finalCampaignId,
           status: 'active',
           date_assigned: new Date().toISOString(),
         })
